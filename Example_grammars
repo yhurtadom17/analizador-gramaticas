@@ -1,0 +1,17 @@
+1. Grammar for LL(1)
+
+E -> T E'
+E' -> + T E' | ε
+T -> F T'
+T' -> * F T' | ε
+F -> ( E ) | id
+
+Input String: id + id * id
+
+2. Grammar for SLR(1)
+
+E -> E + T | T
+T -> T * F | F | ( E )
+F -> id
+
+Input String: id * id + id
