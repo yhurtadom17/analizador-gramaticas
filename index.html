@@ -1,0 +1,611 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Analizador de Gramaticas</title>
+  <!-- Tailwind CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* small safety for fonts and body */
+    body { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
+  </style>
+</head>
+<body class="bg-slate-900">
+  <div id="root"></div>
+
+  <!-- React and ReactDOM (UMD builds) -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <!-- Babel for in-browser JSX transpilation -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- App script (JSX) -->
+  <script type="text/babel">
+  const { useState } = React;
+
+  /* Simple SVG icon replacements for lucide-react icons used in the component */
+  const AlertCircle = ({ size=24, className="" }) => (
+    <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" stroke="currentColor">
+      <circle cx="12" cy="12" r="10" strokeWidth="2"></circle>
+      <path d="M12 8v4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"></path>
+      <path d="M12 16h.01" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"></path>
+    </svg>
+  );
+  const CheckCircle = ({ size=24, className="" }) => (
+    <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" stroke="currentColor">
+      <path d="M9 12l2 2 4-4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"></path>
+      <circle cx="12" cy="12" r="10" strokeWidth="2"></circle>
+    </svg>
+  );
+  const ChevronRight = ({ size=20, className="" }) => (
+    <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" stroke="currentColor">
+      <path d="M9 6l6 6-6 6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"></path>
+    </svg>
+  );
+
+  // Begin ParserAnalyzer component (adapted to run in browser via Babel)
+  function ParserAnalyzer() {
+    const [parserType, setParserType] = useState("LL1");
+    const [grammarText, setGrammarText] = useState("");
+    const [inputString, setInputString] = useState("");
+    const [results, setResults] = useState(null);
+    const [error, setError] = useState("");
+
+    const tokenizeProduction = (prod) => {
+      if (!prod) return [];
+      if (prod.includes(" ")) {
+        return prod.split(/\s+/).filter(Boolean);
+      }
+      const tokens = [];
+      let i = 0;
+      while (i < prod.length) {
+        const ch = prod[i];
+        if (ch === " ") { i++; continue; }
+        if (/[A-Z]/.test(ch)) { tokens.push(ch); i++; continue; }
+        if (/[a-z0-9_]/.test(ch) || ch === "+" || ch === "-" || ch === "*") {
+          let tok = "";
+          while (i < prod.length && /[a-z0-9_+\-*]/.test(prod[i])) {
+            tok += prod[i];
+            i++;
+          }
+          tokens.push(tok);
+          continue;
+        }
+        tokens.push(ch);
+        i++;
+      }
+      return tokens;
+    };
+
+    const parseGrammar = (text) => {
+      const lines = text.split("\n");
+      const grammar = {};
+      let startSymbol = null;
+      for (let raw of lines) {
+        const line = raw.trim();
+        if (!line || line.startsWith("#")) continue;
+        const arrowIndex = line.indexOf("->");
+        if (arrowIndex === -1) continue;
+        const lhs = line.slice(0, arrowIndex).trim();
+        const rhs = line.slice(arrowIndex + 2).trim();
+        if (!startSymbol) startSymbol = lhs;
+        const alternatives = rhs.split("|").map((s) => s.trim());
+        grammar[lhs] = grammar[lhs] || [];
+        for (const alt of alternatives) {
+          if (alt === "ε" || alt === "" || alt === "eps") {
+            grammar[lhs].push(["ε"]);
+          } else {
+            grammar[lhs].push(tokenizeProduction(alt));
+          }
+        }
+      }
+      return { grammar, startSymbol };
+    };
+
+    const getAllSymbols = (grammar) => {
+      const nonTerminals = new Set(Object.keys(grammar));
+      const terminals = new Set();
+      for (const prods of Object.values(grammar)) {
+        for (const prod of prods) {
+          if (prod.length === 1 && prod[0] === "ε") continue;
+          for (const token of prod) {
+            if (!nonTerminals.has(token) && token !== "ε") terminals.add(token);
+          }
+        }
+      }
+      return { terminals: Array.from(terminals), nonTerminals: Array.from(nonTerminals) };
+    };
+
+    const computeFirst = (grammar) => {
+      const first = {};
+      const { terminals, nonTerminals } = getAllSymbols(grammar);
+      terminals.forEach((t) => { first[t] = new Set([t]); });
+      Object.keys(grammar).forEach((nt) => { first[nt] = new Set(); });
+      let changed = true; let iterations = 0;
+      while (changed && iterations < 1000) {
+        changed = false; iterations++;
+        for (const [nt, prods] of Object.entries(grammar)) {
+          for (const prod of prods) {
+            if (prod.length === 1 && prod[0] === "ε") {
+              if (!first[nt].has("ε")) { first[nt].add("ε"); changed = true; }
+              continue;
+            }
+            let nullablePrefix = true;
+            for (const symbol of prod) {
+              const symbolFirst = first[symbol] || new Set([symbol]);
+              for (const s of symbolFirst) {
+                if (s !== "ε" && !first[nt].has(s)) {
+                  first[nt].add(s);
+                  changed = true;
+                }
+              }
+              if (!symbolFirst.has("ε")) { nullablePrefix = false; break; }
+            }
+            if (nullablePrefix) {
+              if (!first[nt].has("ε")) { first[nt].add("ε"); changed = true; }
+            }
+          }
+        }
+      }
+      return first;
+    };
+
+    const computeFollow = (grammar, startSymbol) => {
+      const follow = {};
+      const nonTerminals = Object.keys(grammar);
+      nonTerminals.forEach((nt) => (follow[nt] = new Set()));
+      if (follow[startSymbol]) follow[startSymbol].add("$");
+      const first = computeFirst(grammar);
+      let changed = true; let iterations = 0;
+      while (changed && iterations < 1000) {
+        changed = false; iterations++;
+        for (const [lhs, prods] of Object.entries(grammar)) {
+          for (const prod of prods) {
+            for (let i = 0; i < prod.length; i++) {
+              const B = prod[i];
+              if (!grammar[B]) continue;
+              const beta = prod.slice(i + 1);
+              const firstBeta = new Set();
+              let allNullable = true;
+              if (beta.length === 0) allNullable = true;
+              else {
+                for (const sym of beta) {
+                  const symFirst = first[sym] || new Set([sym]);
+                  for (const t of symFirst) if (t !== "ε") firstBeta.add(t);
+                  if (!symFirst.has("ε")) { allNullable = false; break; }
+                }
+              }
+              const beforeSize = follow[B].size;
+              firstBeta.forEach((t) => follow[B].add(t));
+              if (allNullable) { follow[lhs].forEach((t) => follow[B].add(t)); }
+              if (follow[B].size > beforeSize) changed = true;
+            }
+          }
+        }
+      }
+      return follow;
+    };
+
+    const buildLL1Table = (grammar, firstSets, followSets) => {
+      const table = {};
+      const { terminals, nonTerminals } = getAllSymbols(grammar);
+      const termSet = new Set(terminals.concat(["$"]));
+      const conflicts = [];
+      nonTerminals.forEach((nt) => {
+        table[nt] = {}; termSet.forEach((t) => (table[nt][t] = []));
+      });
+      for (const [A, prods] of Object.entries(grammar)) {
+        for (const prod of prods) {
+          const firstProd = new Set();
+          if (prod.length === 1 && prod[0] === "ε") firstProd.add("ε");
+          else {
+            let nullablePrefix = true;
+            for (const sym of prod) {
+              const symFirst = firstSets[sym] || new Set([sym]);
+              symFirst.forEach((s) => { if (s !== "ε") firstProd.add(s); });
+              if (!symFirst.has("ε")) { nullablePrefix = false; break; }
+            }
+            if (nullablePrefix) firstProd.add("ε");
+          }
+          for (const t of firstProd) {
+            if (t === "ε") {
+              for (const b of (followSets[A] || [])) {
+                if (table[A][b].length > 0) conflicts.push(`Conflicto en [${A}, ${b}]`);
+                table[A][b].push(prod);
+              }
+            } else {
+              if (table[A][t].length > 0) conflicts.push(`Conflicto en [${A}, ${t}]`);
+              table[A][t].push(prod);
+            }
+          }
+        }
+      }
+      return { table, terminals: Array.from(termSet), conflicts };
+    };
+
+    const tokenizeInput = (input) => {
+      if (!input) return [];
+      if (input.includes(" ")) return input.split(/\s+/).filter(Boolean);
+      return tokenizeProduction(input);
+    };
+
+    const parseLL1 = (grammar, table, terminals, inputTokens, startSymbol) => {
+      const stack = ["$"].concat([startSymbol]);
+      const input = inputTokens.concat(["$"]);
+      let ip = 0;
+      const steps = [];
+      while (stack.length > 0) {
+        const top = stack[stack.length - 1];
+        const curr = input[ip];
+        steps.push({ stack: [...stack].slice().reverse().join(" "), input: input.slice(ip).join(" "), action: "" });
+        if (top === curr) {
+          if (top === "$") { steps[steps.length - 1].action = "Aceptar"; return { success: true, steps }; }
+          stack.pop(); ip++; steps[steps.length - 1].action = `Match ${top}`;
+        } else if (!grammar[top]) {
+          return { success: false, steps, error: `Error: esperaba ${top}, encontró ${curr}` };
+        } else {
+          const prods = table[top] && table[top][curr] ? table[top][curr] : [];
+          if (!prods || prods.length === 0) return { success: false, steps, error: `Error: no hay producción para [${top}, ${curr}]` };
+          const prod = prods[0];
+          steps[steps.length - 1].action = `${top} → ${prod.length === 1 && prod[0] === "ε" ? "ε" : prod.join(" ")}`;
+          stack.pop();
+          if (!(prod.length === 1 && prod[0] === "ε")) {
+            for (let i = prod.length - 1; i >= 0; i--) stack.push(prod[i]);
+          }
+        }
+        if (steps.length > 2000) return { success: false, steps, error: "Error: demasiados pasos" };
+      }
+      return { success: false, steps, error: "Error inesperado" };
+    };
+
+    const buildLR0Items = (grammar, startSymbol) => {
+      const augmentedStart = `${startSymbol}'`;
+      const augmentedGrammar = { ...grammar };
+      augmentedGrammar[augmentedStart] = [[startSymbol]];
+      const itemToStr = (it) => `${it.lhs}→${it.rhs.join(" ")}·${it.dot}`;
+      const closure = (items) => {
+        const res = new Map();
+        const queue = items.map((it) => ({ ...it }));
+        for (const it of queue) res.set(itemToStr(it), it);
+        while (queue.length) {
+          const item = queue.shift();
+          if (item.dot < item.rhs.length) {
+            const B = item.rhs[item.dot];
+            if (augmentedGrammar[B]) {
+              for (const prod of augmentedGrammar[B]) {
+                const newItem = { lhs: B, rhs: prod, dot: 0 };
+                const key = itemToStr(newItem);
+                if (!res.has(key)) { res.set(key, newItem); queue.push(newItem); }
+              }
+            }
+          }
+        }
+        return Array.from(res.values());
+      };
+      const gotoFunc = (items, X) => {
+        const moved = [];
+        for (const it of items) {
+          if (it.dot < it.rhs.length && it.rhs[it.dot] === X) {
+            moved.push({ lhs: it.lhs, rhs: it.rhs, dot: it.dot + 1 });
+          }
+        }
+        return closure(moved);
+      };
+      const itemsEqual = (a, b) => {
+        if (a.length !== b.length) return false;
+        const sa = new Set(a.map(itemToStr));
+        const sb = new Set(b.map(itemToStr));
+        for (const x of sa) if (!sb.has(x)) return false;
+        return true;
+      };
+      const I0 = closure([{ lhs: augmentedStart, rhs: [startSymbol], dot: 0 }]);
+      const states = [I0];
+      const transitions = {};
+      let idx = 0;
+      while (idx < states.length) {
+        const state = states[idx];
+        const symbols = new Set();
+        state.forEach((it) => {
+          if (it.dot < it.rhs.length) symbols.add(it.rhs[it.dot]);
+        });
+        for (const X of symbols) {
+          const g = gotoFunc(state, X);
+          if (g.length === 0) continue;
+          let found = -1;
+          for (let s = 0; s < states.length; s++) if (itemsEqual(states[s], g)) { found = s; break; }
+          if (found === -1) { found = states.length; states.push(g); }
+          transitions[`${idx},${X}`] = found;
+        }
+        idx++;
+      }
+      return { states, transitions, augmentedGrammar, augmentedStart };
+    };
+
+    const buildSLR1Table = (grammar, startSymbol) => {
+      const { states, transitions, augmentedGrammar, augmentedStart } = buildLR0Items(grammar, startSymbol);
+      const followSets = computeFollow(grammar, startSymbol);
+      const { terminals, nonTerminals } = getAllSymbols(grammar);
+      const termSet = new Set(terminals.concat(["$"]));
+      const action = {}, gotoTable = {}, conflicts = [];
+      states.forEach((st, i) => {
+        action[i] = {}; gotoTable[i] = {};
+        termSet.forEach((t) => (action[i][t] = []));
+        nonTerminals.forEach((nt) => (gotoTable[i][nt] = null));
+        for (const item of st) {
+          if (item.dot < item.rhs.length) {
+            const a = item.rhs[item.dot];
+            const key = `${i},${a}`;
+            if (transitions[key] !== undefined) {
+              const t = transitions[key];
+              if (!grammar[a]) {
+                const shift = `s${t}`;
+                if (!action[i][a].includes(shift)) action[i][a].push(shift);
+              } else {
+                gotoTable[i][a] = transitions[key];
+              }
+            }
+          } else {
+            if (item.lhs === augmentedStart) {
+              action[i]["$"] = ["acc"];
+            } else {
+              const prodRhs = item.rhs.length === 0 ? ["ε"] : item.rhs;
+              const reduce = `r${item.lhs}→${prodRhs.join(" ")}`;
+              (followSets[item.lhs] || new Set()).forEach((a) => {
+                if (!action[i][a].includes(reduce)) action[i][a].push(reduce);
+              });
+            }
+          }
+        }
+      });
+      return { action, gotoTable, terminals: Array.from(termSet), nonTerminals, conflicts, states };
+    };
+
+    const parseSLR1 = (grammar, action, gotoTable, inputTokens) => {
+      const stack = [0];
+      const input = inputTokens.concat(["$"]);
+      let ip = 0;
+      const steps = [];
+      while (true) {
+        const state = stack[stack.length - 1];
+        const a = input[ip];
+        steps.push({ stack: stack.join(" "), input: input.slice(ip).join(" "), action: "" });
+        const acts = action[state] && action[state][a] ? action[state][a] : [];
+        if (!acts || acts.length === 0) {
+          return { success: false, steps, error: `Error: no hay acción para estado ${state} con símbolo '${a}'` };
+        }
+        const act = acts[0];
+        if (act === "acc") { steps[steps.length - 1].action = "Aceptar"; return { success: true, steps }; }
+        if (act.startsWith("s")) {
+          const ns = parseInt(act.slice(1), 10);
+          steps[steps.length - 1].action = `Shift ${ns}`;
+          stack.push(ns); ip++;
+        } else if (act.startsWith("r")) {
+          const prodText = act.slice(1);
+          const arrow = prodText.indexOf("→");
+          const lhs = prodText.slice(0, arrow);
+          const rhs = prodText.slice(arrow + 1).trim();
+          const rhsTokens = rhs === "ε" || rhs === "" ? [] : rhs.split(/\s+/).filter(Boolean);
+          steps[steps.length - 1].action = `Reduce ${lhs} → ${rhsTokens.length === 0 ? "ε" : rhsTokens.join(" ")}`;
+          for (let k = 0; k < rhsTokens.length; k++) stack.pop();
+          const prev = stack[stack.length - 1];
+          const next = gotoTable[prev] && gotoTable[prev][lhs] !== null ? gotoTable[prev][lhs] : null;
+          if (next === null) return { success: false, steps, error: `Error: no hay goto para estado ${prev} y símbolo ${lhs}` };
+          stack.push(next);
+        }
+        if (steps.length > 2000) return { success: false, steps, error: "Error: demasiados pasos" };
+      }
+    };
+
+    const analyzeGrammar = () => {
+      try {
+        setError(""); setResults(null);
+        if (!grammarText.trim()) { setError("Por favor ingresa una gramática"); return; }
+        const { grammar, startSymbol } = parseGrammar(grammarText);
+        if (!startSymbol || Object.keys(grammar).length === 0) { setError("Gramática inválida. Formato: S -> a S | b"); return; }
+        const firstSets = computeFirst(grammar);
+        const followSets = computeFollow(grammar, startSymbol);
+        if (parserType === "LL1") {
+          const { table, terminals, conflicts } = buildLL1Table(grammar, firstSets, followSets);
+          if (conflicts.length > 0) { setError(`Gramática NO es LL(1). ${conflicts.join(", ")}`); setResults({ isValid: false, firstSets, followSets, conflicts }); return; }
+          let parseResult = null;
+          if (inputString.trim()) {
+            const inputTokens = tokenizeInput(inputString.trim());
+            parseResult = parseLL1(grammar, table, terminals, inputTokens, startSymbol);
+          }
+          setResults({ isValid: true, firstSets, followSets, table, terminals, startSymbol, parseResult });
+        } else {
+          const { action, gotoTable, terminals, nonTerminals, conflicts, states } = buildSLR1Table(grammar, startSymbol);
+          if (conflicts.length > 0) { setError(`Gramática NO es SLR(1). ${conflicts.join(", ")}`); setResults({ isValid: false, firstSets, followSets, conflicts }); return; }
+          let parseResult = null;
+          if (inputString.trim()) {
+            const inputTokens = tokenizeInput(inputString.trim());
+            parseResult = parseSLR1(grammar, action, gotoTable, inputTokens);
+          }
+          setResults({ isValid: true, firstSets, followSets, action, gotoTable, terminals, nonTerminals, startSymbol, parseResult, states });
+        }
+      } catch (err) {
+        console.error(err); setError(`Error: ${err.message}`);
+      }
+    };
+
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 p-6">
+        <div className="max-w-7xl mx-auto">
+          <div className="text-center mb-8">
+            <h1 className="text-5xl font-bold text-white mb-2 bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-pink-600">
+              Analizador de Gramáticas
+            </h1>
+            <p className="text-purple-200 text-lg">LL(1) y SLR(1) Parser Generator</p>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+            <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-purple-500/30 shadow-2xl">
+              <label className="block text-white font-semibold mb-3 text-lg">Tipo de Parser</label>
+              <div className="flex gap-4">
+                <button onClick={() => setParserType("LL1")} className={"flex-1 py-3 px-6 rounded-xl font-semibold transition-all " + (parserType === "LL1" ? "bg-gradient-to-r from-purple-500 to-pink-500 text-white shadow-lg scale-105" : "bg-white/20 text-purple-200 hover:bg-white/30")}>LL(1)</button>
+                <button onClick={() => setParserType("SLR1")} className={"flex-1 py-3 px-6 rounded-xl font-semibold transition-all " + (parserType === "SLR1" ? "bg-gradient-to-r from-purple-500 to-pink-500 text-white shadow-lg scale-105" : "bg-white/20 text-purple-200 hover:bg-white/30")}>SLR(1)</button>
+              </div>
+            </div>
+
+            <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-purple-500/30 shadow-2xl">
+              <label className="block text-white font-semibold mb-3 text-lg">Cadena de Entrada</label>
+              <input type="text" value={inputString} onChange={(e) => setInputString(e.target.value)} placeholder="Ej: a a b b  (o: aabb)" className="w-full p-3 rounded-xl bg-white/20 border border-purple-400/50 text-white placeholder-purple-300 focus:outline-none focus:ring-2 focus:ring-purple-500" />
+            </div>
+          </div>
+
+          <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-purple-500/30 shadow-2xl mb-6">
+            <label className="block text-white font-semibold mb-3 text-lg">Gramática</label>
+            <textarea value={grammarText} onChange={(e) => setGrammarText(e.target.value)} placeholder={'Formato: S -> a S | b\nA -> a A | ε\n\n- Puedes separar tokens por espacios para símbolos multi-carácter\n- Usa "ε" para epsilon'} rows={8} className="w-full p-4 rounded-xl bg-white/20 border border-purple-400/50 text-white placeholder-purple-300 focus:outline-none focus:ring-2 focus:ring-purple-500 font-mono"></textarea>
+            <button onClick={analyzeGrammar} className="mt-4 w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white py-3 px-6 rounded-xl font-semibold hover:from-purple-600 hover:to-pink-600 transition-all shadow-lg hover:shadow-xl flex items-center justify-center gap-2">
+              Analizar Gramática <ChevronRight size={20} />
+            </button>
+          </div>
+
+          {error && (
+            <div className="bg-red-500/20 backdrop-blur-lg border border-red-500 rounded-2xl p-6 mb-6 flex items-start gap-3">
+              <AlertCircle className="text-red-400 flex-shrink-0 mt-1" size={24} />
+              <p className="text-red-200 font-semibold">{error}</p>
+            </div>
+          )}
+
+          {results && (
+            <div className="space-y-6">
+              {results.isValid && (
+                <div className="bg-green-500/20 backdrop-blur-lg border border-green-500 rounded-2xl p-6 flex items-center gap-3">
+                  <CheckCircle className="text-green-400" size={24} />
+                  <p className="text-green-200 font-semibold">✓ La gramática es {parserType}</p>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-purple-500/30 shadow-2xl">
+                  <h3 className="text-xl font-bold text-white mb-4 flex items-center gap-2">📊 Conjuntos First</h3>
+                  <div className="space-y-2">
+                    {Object.entries(results.firstSets).map(([symbol, set]) => (
+                      <div key={symbol} className="bg-white/10 rounded-lg p-3">
+                        <span className="text-purple-300 font-semibold">First({symbol}):</span>
+                        <span className="text-white ml-2">{Array.from(set).join(", ")}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-purple-500/30 shadow-2xl">
+                  <h3 className="text-xl font-bold text-white mb-4 flex items-center gap-2">📋 Conjuntos Follow</h3>
+                  <div className="space-y-2">
+                    {Object.entries(results.followSets).map(([symbol, set]) => (
+                      <div key={symbol} className="bg-white/10 rounded-lg p-3">
+                        <span className="text-purple-300 font-semibold">Follow({symbol}):</span>
+                        <span className="text-white ml-2">{Array.from(set).join(", ")}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {results.isValid && results.table && (
+                <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-purple-500/30 shadow-2xl overflow-x-auto">
+                  <h3 className="text-xl font-bold text-white mb-4">Tabla de Análisis LL(1)</h3>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-purple-500/50">
+                          <th className="p-2 text-purple-300 font-semibold text-left">No Terminal</th>
+                          {results.terminals.map((t) => (<th key={t} className="p-2 text-purple-300 font-semibold">{t}</th>))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {Object.entries(results.table).map(([nt, row]) => (
+                          <tr key={nt} className="border-b border-purple-500/30">
+                            <td className="p-2 text-white font-semibold">{nt}</td>
+                            {results.terminals.map((t) => (
+                              <td key={t} className="p-2 text-center">
+                                <span className="text-purple-200">{row[t] && row[t].length > 0 ? `${nt}→${row[t][0].join(" ")}` : ""}</span>
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {results.isValid && results.action && (
+                <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-purple-500/30 shadow-2xl overflow-x-auto">
+                  <h3 className="text-xl font-bold text-white mb-4">Tabla de Análisis SLR(1)</h3>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b border-purple-500/50">
+                          <th className="p-2 text-purple-300 font-semibold">Estado</th>
+                          <th colSpan={results.terminals.length} className="p-2 text-purple-300 font-semibold border-x border-purple-500/50">Action</th>
+                          <th colSpan={results.nonTerminals.length} className="p-2 text-purple-300 font-semibold">Goto</th>
+                        </tr>
+                        <tr className="border-b border-purple-500/50">
+                          <th className="p-2"></th>
+                          {results.terminals.map((t) => (<th key={t} className="p-2 text-purple-300">{t}</th>))}
+                          {results.nonTerminals.map((nt) => (<th key={nt} className="p-2 text-purple-300">{nt}</th>))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {Object.keys(results.action).map((state) => (
+                          <tr key={state} className="border-b border-purple-500/30">
+                            <td className="p-2 text-white font-semibold">{state}</td>
+                            {results.terminals.map((t) => (<td key={t} className="p-2 text-center text-purple-200">{results.action[state][t] && results.action[state][t].length > 0 ? results.action[state][t][0] : ""}</td>))}
+                            {results.nonTerminals.map((nt) => (<td key={nt} className="p-2 text-center text-purple-200">{results.gotoTable[state][nt] !== null ? results.gotoTable[state][nt] : ""}</td>))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {results.parseResult && (
+                <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 border border-purple-500/30 shadow-2xl">
+                  <h3 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
+                    {results.parseResult.success ? (<><CheckCircle className="text-green-400" size={24} />Cadena Aceptada</>) : (<><AlertCircle className="text-red-400" size={24} />Cadena Rechazada</>)}
+                  </h3>
+
+                  {results.parseResult.error && (<div className="mb-4 p-3 bg-red-500/20 border border-red-500 rounded-lg"><p className="text-red-200">{results.parseResult.error}</p></div>)}
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-purple-500/50">
+                          <th className="p-3 text-purple-300 font-semibold text-left">Paso</th>
+                          <th className="p-3 text-purple-300 font-semibold text-left">Pila</th>
+                          <th className="p-3 text-purple-300 font-semibold text-left">Entrada</th>
+                          <th className="p-3 text-purple-300 font-semibold text-left">Acción</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {results.parseResult.steps.map((step, idx) => (
+                          <tr key={idx} className="border-b border-purple-500/30 hover:bg-white/5">
+                            <td className="p-3 text-purple-200 font-mono">{idx + 1}</td>
+                            <td className="p-3 text-white font-mono">{step.stack}</td>
+                            <td className="p-3 text-white font-mono">{step.input}</td>
+                            <td className="p-3 text-green-300 font-semibold">{step.action}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Mount the app
+  const root = ReactDOM.createRoot(document.getElementById('root'));
+  root.render(<ParserAnalyzer />);
+
+  </script>
+</body>
+</html>
