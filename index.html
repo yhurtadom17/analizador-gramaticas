@@ -44,7 +44,7 @@
     </svg>
   );
 
-  // Begin ParserAnalyzer component (adapted to run in browser via Babel)
+  // Begin ParserAnalyzer component
   function ParserAnalyzer() {
     const [parserType, setParserType] = useState("LL1");
     const [grammarText, setGrammarText] = useState("");
@@ -53,6 +53,7 @@
     const [error, setError] = useState("");
 
     const tokenizeProduction = (prod) => {
+      // Símbolo separado por espacios
       if (!prod) return [];
       if (prod.includes(" ")) {
         return prod.split(/\s+/).filter(Boolean);
@@ -60,6 +61,7 @@
       const tokens = [];
       let i = 0;
       while (i < prod.length) {
+        // Analizar carácter por carácter
         const ch = prod[i];
         if (ch === " ") { i++; continue; }
         if (/[A-Z]/.test(ch)) { tokens.push(ch); i++; continue; }
@@ -79,36 +81,46 @@
     };
 
     const parseGrammar = (text) => {
+      // Dividir el texto en líneas, inicializar y crear la variable del símbolo inicial
       const lines = text.split("\n");
       const grammar = {};
       let startSymbol = null;
       for (let raw of lines) {
+        // Eliminar espacios y comentarios
         const line = raw.trim();
         if (!line || line.startsWith("#")) continue;
+        // Dividir en LHS y RHS
         const arrowIndex = line.indexOf("->");
         if (arrowIndex === -1) continue;
         const lhs = line.slice(0, arrowIndex).trim();
         const rhs = line.slice(arrowIndex + 2).trim();
+        // Establecer el símbolo inicial
         if (!startSymbol) startSymbol = lhs;
+        // Dividir RHS en alternativas con el símbolo '|'
         const alternatives = rhs.split("|").map((s) => s.trim());
         grammar[lhs] = grammar[lhs] || [];
+        // Procesar las producciones
         for (const alt of alternatives) {
+          // Con epsilon
           if (alt === "ε" || alt === "" || alt === "eps") {
             grammar[lhs].push(["ε"]);
           } else {
+            // Tokenizar producción
             grammar[lhs].push(tokenizeProduction(alt));
           }
         }
       }
+      // Devuelve un objeto con la gramática legible por la computadora y el símbolo inicial
       return { grammar, startSymbol };
     };
 
     const getAllSymbols = (grammar) => {
-      const nonTerminals = new Set(Object.keys(grammar));
-      const terminals = new Set();
+      // Identificar terminales y no terminales
+      const nonTerminals = new Set(Object.keys(grammar)); //Identificar no terminales
+      const terminals = new Set(); // Identificar terminales
       for (const prods of Object.values(grammar)) {
         for (const prod of prods) {
-          if (prod.length === 1 && prod[0] === "ε") continue;
+          if (prod.length === 1 && prod[0] === "ε") continue; //Ignorar Epsilon
           for (const token of prod) {
             if (!nonTerminals.has(token) && token !== "ε") terminals.add(token);
           }
@@ -118,19 +130,23 @@
     };
 
     const computeFirst = (grammar) => {
+      // Inicialización de conjuntos First
       const first = {};
-      const { terminals, nonTerminals } = getAllSymbols(grammar);
-      terminals.forEach((t) => { first[t] = new Set([t]); });
-      Object.keys(grammar).forEach((nt) => { first[nt] = new Set(); });
+      const { terminals, nonTerminals } = getAllSymbols(grammar); // Identificar terminales y no terminales
+      terminals.forEach((t) => { first[t] = new Set([t]); }); // Regla para terminales
+      Object.keys(grammar).forEach((nt) => { first[nt] = new Set(); }); // Inicializar no terminales
+      // Iterativamente aplicar reglas de First hasta que no haya cambios
       let changed = true; let iterations = 0;
       while (changed && iterations < 1000) {
         changed = false; iterations++;
         for (const [nt, prods] of Object.entries(grammar)) {
           for (const prod of prods) {
+            // Procesar las producciones epsilon
             if (prod.length === 1 && prod[0] === "ε") {
               if (!first[nt].has("ε")) { first[nt].add("ε"); changed = true; }
               continue;
             }
+            // Procesar producciones normales
             let nullablePrefix = true;
             for (const symbol of prod) {
               const symbolFirst = first[symbol] || new Set([symbol]);
@@ -152,19 +168,24 @@
     };
 
     const computeFollow = (grammar, startSymbol) => {
+      // Inicialización de conjuntos Follow
       const follow = {};
-      const nonTerminals = Object.keys(grammar);
-      nonTerminals.forEach((nt) => (follow[nt] = new Set()));
-      if (follow[startSymbol]) follow[startSymbol].add("$");
-      const first = computeFirst(grammar);
+      const nonTerminals = Object.keys(grammar); // Identificar no terminales
+      nonTerminals.forEach((nt) => (follow[nt] = new Set())); // Inicializar no terminales
+      if (follow[startSymbol]) follow[startSymbol].add("$"); // Regla para el símbolo inicial
+      const first = computeFirst(grammar); // Calcular conjuntos First
+      // Iterativamente aplicar reglas de Follow hasta que no haya cambios
       let changed = true; let iterations = 0;
       while (changed && iterations < 1000) {
         changed = false; iterations++;
+        // Para cada producción A -> αBβ
         for (const [lhs, prods] of Object.entries(grammar)) {
           for (const prod of prods) {
+            // Para cada símbolo B en la producción 
             for (let i = 0; i < prod.length; i++) {
               const B = prod[i];
               if (!grammar[B]) continue;
+              // Calcular First(β)
               const beta = prod.slice(i + 1);
               const firstBeta = new Set();
               let allNullable = true;
@@ -176,9 +197,10 @@
                   if (!symFirst.has("ε")) { allNullable = false; break; }
                 }
               }
+              // Reglas de Follow
               const beforeSize = follow[B].size;
-              firstBeta.forEach((t) => follow[B].add(t));
-              if (allNullable) { follow[lhs].forEach((t) => follow[B].add(t)); }
+              firstBeta.forEach((t) => follow[B].add(t)); // Follow(B) = First(β)-{ε}
+              if (allNullable) { follow[lhs].forEach((t) => follow[B].add(t)); } // Follow(B) = Follow(A)
               if (follow[B].size > beforeSize) changed = true;
             }
           }
@@ -188,6 +210,7 @@
     };
 
     const buildLL1Table = (grammar, firstSets, followSets) => {
+      // Inicialización de la tabla y creación
       const table = {};
       const { terminals, nonTerminals } = getAllSymbols(grammar);
       const termSet = new Set(terminals.concat(["$"]));
@@ -195,7 +218,9 @@
       nonTerminals.forEach((nt) => {
         table[nt] = {}; termSet.forEach((t) => (table[nt][t] = []));
       });
+      // Para cada producción A -> α (procesamiento)
       for (const [A, prods] of Object.entries(grammar)) {
+        // Calcular el first(α)
         for (const prod of prods) {
           const firstProd = new Set();
           if (prod.length === 1 && prod[0] === "ε") firstProd.add("ε");
@@ -208,13 +233,14 @@
             }
             if (nullablePrefix) firstProd.add("ε");
           }
+          // Llenar la tabla LL(1)
           for (const t of firstProd) {
-            if (t === "ε") {
+            if (t === "ε") { // Para producciones epsilon
               for (const b of (followSets[A] || [])) {
                 if (table[A][b].length > 0) conflicts.push(`Conflicto en [${A}, ${b}]`);
                 table[A][b].push(prod);
               }
-            } else {
+            } else { // Para terminales en first(α)
               if (table[A][t].length > 0) conflicts.push(`Conflicto en [${A}, ${t}]`);
               table[A][t].push(prod);
             }
@@ -231,20 +257,24 @@
     };
 
     const parseLL1 = (grammar, table, terminals, inputTokens, startSymbol) => {
+      // Inicialización
       const stack = ["$"].concat([startSymbol]);
       const input = inputTokens.concat(["$"]);
       let ip = 0;
       const steps = [];
       while (stack.length > 0) {
-        const top = stack[stack.length - 1];
-        const curr = input[ip];
+        const top = stack[stack.length - 1]; // Tope de la pila
+        const curr = input[ip]; // Símbolo actual de entrada
+        // Registrar los pasos
         steps.push({ stack: [...stack].slice().reverse().join(" "), input: input.slice(ip).join(" "), action: "" });
+        // Tres Casos Posibles
+        // Caso 1: Match de terminal
         if (top === curr) {
           if (top === "$") { steps[steps.length - 1].action = "Aceptar"; return { success: true, steps }; }
           stack.pop(); ip++; steps[steps.length - 1].action = `Match ${top}`;
-        } else if (!grammar[top]) {
+        } else if (!grammar[top]) { // Caso 2: Error de terminal inesperado
           return { success: false, steps, error: `Error: esperaba ${top}, encontró ${curr}` };
-        } else {
+        } else { // Caso 3: No terminal, aplicar producción
           const prods = table[top] && table[top][curr] ? table[top][curr] : [];
           if (!prods || prods.length === 0) return { success: false, steps, error: `Error: no hay producción para [${top}, ${curr}]` };
           const prod = prods[0];
@@ -260,10 +290,12 @@
     };
 
     const buildLR0Items = (grammar, startSymbol) => {
-      const augmentedStart = `${startSymbol}'`;
+      // Construcción de conjuntos de ítems LR(0)
+      const augmentedStart = `${startSymbol}'`; // Crea la gramática aumentada
       const augmentedGrammar = { ...grammar };
       augmentedGrammar[augmentedStart] = [[startSymbol]];
       const itemToStr = (it) => `${it.lhs}→${it.rhs.join(" ")}·${it.dot}`;
+      // Encontrar todos los ítems derivados de un conjunto inicial
       const closure = (items) => {
         const res = new Map();
         const queue = items.map((it) => ({ ...it }));
@@ -283,6 +315,7 @@
         }
         return Array.from(res.values());
       };
+      // Calcular el conjunto de ítems después de reconocer el símbolo X.
       const gotoFunc = (items, X) => {
         const moved = [];
         for (const it of items) {
@@ -292,6 +325,7 @@
         }
         return closure(moved);
       };
+      // Comparar dos conjuntos de ítems para saber si están duplicados
       const itemsEqual = (a, b) => {
         if (a.length !== b.length) return false;
         const sa = new Set(a.map(itemToStr));
@@ -299,6 +333,7 @@
         for (const x of sa) if (!sb.has(x)) return false;
         return true;
       };
+      // Construcción de los estados y transiciones (autómata)
       const I0 = closure([{ lhs: augmentedStart, rhs: [startSymbol], dot: 0 }]);
       const states = [I0];
       const transitions = {};
@@ -306,16 +341,20 @@
       while (idx < states.length) {
         const state = states[idx];
         const symbols = new Set();
+        // Recolectar todos los símbolos después del punto
         state.forEach((it) => {
           if (it.dot < it.rhs.length) symbols.add(it.rhs[it.dot]);
         });
+        // Para cada símbolo, calcular GOTO
         for (const X of symbols) {
           const g = gotoFunc(state, X);
           if (g.length === 0) continue;
+          // Buscar si este estado ya existe
           let found = -1;
           for (let s = 0; s < states.length; s++) if (itemsEqual(states[s], g)) { found = s; break; }
-          if (found === -1) { found = states.length; states.push(g); }
-          transitions[`${idx},${X}`] = found;
+          // Si no existe, agregarlo
+          if (found === -1) { found = states.length; states.push(g); } 
+          transitions[`${idx},${X}`] = found; // Registrar transición
         }
         idx++;
       }
@@ -362,24 +401,31 @@
     };
 
     const parseSLR1 = (grammar, action, gotoTable, inputTokens) => {
-      const stack = [0];
-      const input = inputTokens.concat(["$"]);
-      let ip = 0;
-      const steps = [];
+      // Inicialización
+      const stack = [0]; // Pila de estados, con 0 inicialmente
+      const input = inputTokens.concat(["$"]); // Cadena de entrada con símbolo de fin
+      let ip = 0; // Puntero de entrada
+      const steps = []; // Registro de pasos
+      // Bucle principal del análisis que se ejecuta hasta aceptación o error
       while (true) {
-        const state = stack[stack.length - 1];
-        const a = input[ip];
+        const state = stack[stack.length - 1]; // Estado actual
+        const a = input[ip]; // Símbolo actual de entrada
+        // Registrar el paso actual
         steps.push({ stack: stack.join(" "), input: input.slice(ip).join(" "), action: "" });
         const acts = action[state] && action[state][a] ? action[state][a] : [];
+        // Error si no hay acción definida
         if (!acts || acts.length === 0) {
           return { success: false, steps, error: `Error: no hay acción para estado ${state} con símbolo '${a}'` };
         }
         const act = acts[0];
+        // Caso 1: Aceptar
         if (act === "acc") { steps[steps.length - 1].action = "Aceptar"; return { success: true, steps }; }
+        // Caso 2: Desplazar (Shift)
         if (act.startsWith("s")) {
           const ns = parseInt(act.slice(1), 10);
           steps[steps.length - 1].action = `Shift ${ns}`;
           stack.push(ns); ip++;
+        // Caso 3: Reducir (Reduce)
         } else if (act.startsWith("r")) {
           const prodText = act.slice(1);
           const arrow = prodText.indexOf("→");
@@ -387,11 +433,12 @@
           const rhs = prodText.slice(arrow + 1).trim();
           const rhsTokens = rhs === "ε" || rhs === "" ? [] : rhs.split(/\s+/).filter(Boolean);
           steps[steps.length - 1].action = `Reduce ${lhs} → ${rhsTokens.length === 0 ? "ε" : rhsTokens.join(" ")}`;
-          for (let k = 0; k < rhsTokens.length; k++) stack.pop();
+          for (let k = 0; k < rhsTokens.length; k++) stack.pop(); // Desapilar estados
+          // Consultar la tabla GOTO para el nuevo estado
           const prev = stack[stack.length - 1];
           const next = gotoTable[prev] && gotoTable[prev][lhs] !== null ? gotoTable[prev][lhs] : null;
           if (next === null) return { success: false, steps, error: `Error: no hay goto para estado ${prev} y símbolo ${lhs}` };
-          stack.push(next);
+          stack.push(next); // Apilar el nuevo estado
         }
         if (steps.length > 2000) return { success: false, steps, error: "Error: demasiados pasos" };
       }
@@ -399,12 +446,16 @@
 
     const analyzeGrammar = () => {
       try {
+        // Validación y manejo de errores
         setError(""); setResults(null);
         if (!grammarText.trim()) { setError("Por favor ingresa una gramática"); return; }
         const { grammar, startSymbol } = parseGrammar(grammarText);
         if (!startSymbol || Object.keys(grammar).length === 0) { setError("Gramática inválida. Formato: S -> a S | b"); return; }
+        // Calcular los conjuntos First y Follow
         const firstSets = computeFirst(grammar);
         const followSets = computeFollow(grammar, startSymbol);
+        // Construir la tabla y analizar según el tipo de parser seleccionado
+        // Si es LL(1)
         if (parserType === "LL1") {
           const { table, terminals, conflicts } = buildLL1Table(grammar, firstSets, followSets);
           if (conflicts.length > 0) { setError(`Gramática NO es LL(1). ${conflicts.join(", ")}`); setResults({ isValid: false, firstSets, followSets, conflicts }); return; }
@@ -414,7 +465,7 @@
             parseResult = parseLL1(grammar, table, terminals, inputTokens, startSymbol);
           }
           setResults({ isValid: true, firstSets, followSets, table, terminals, startSymbol, parseResult });
-        } else {
+        } else { // Si es SLR(1)
           const { action, gotoTable, terminals, nonTerminals, conflicts, states } = buildSLR1Table(grammar, startSymbol);
           if (conflicts.length > 0) { setError(`Gramática NO es SLR(1). ${conflicts.join(", ")}`); setResults({ isValid: false, firstSets, followSets, conflicts }); return; }
           let parseResult = null;
